@@ -1,87 +1,68 @@
 
 import Foundation
+import Regex
 import Kanna
 
-struct log {
-    static func error(_ msg: Any) -> Never {
-        print("ERROR: \(msg)")
-        fflush(stdout)
-        exit(1)
-    }
-    
-    static func warning(_ msg: Any) {
-        print("WARN: \(msg)")
+extension URLSession {
+
+    func syncDataTask(with url: URL) -> (Data?, URLResponse?, Error?) {
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        var data: Data?
+        var response: URLResponse?
+        var error: Error?
+
+        dataTask(with: url) {
+            data = $0
+            response = $1
+            error = $2
+            semaphore.signal()
+        }.resume()
+
+        semaphore.wait()
+
+        return (data, response, error)
     }
 }
 
-struct Property {
-    
-    var street: String
-    var suburb: String
-    var postCode: String
-    
-    var price: String
-//    var priceUpper: String?
-    
-    var nBeds: String
-    var nBaths: String
-    var nParks: String
-    
-    init?(doc: HTMLDocument) {
-        let info = doc.at_xpath("//div[@id='baseInfo']")!
-        guard 
-            let street = info.at_xpath("//span[@itemprop='streetAddress']")?.text,
-            let suburb = info.at_xpath("//span[@itemprop='addressLocality']")?.text,
-            let postCode = info.at_xpath("//span[@itemprop='postalCode']")?.text,
-            let price = info.at_xpath("//p[@class='priceText']")?.text,
-            let stats = info.at_xpath("//li[@class='property_info']"),
-            let nBeds = stats.at_xpath("//dd[1]")?.text,
-            let nBaths = stats.at_xpath("//dd[2]")?.text,
-            let nParks = stats.at_xpath("//dd[3]")?.text
-            else { return nil }
-        self.street = street
-        self.suburb = suburb
-        self.postCode = postCode
-        
-        self.price = price
-        
-        self.nBeds = nBeds
-        self.nBaths = nBaths
-        self.nParks = nParks
-    }
-    
-    var tabulated: String {
-        return [street, suburb, postCode, price, nBeds, nBaths].joined(separator: "\t")
-    }
+var links: [String] = []
+while let link = readLine() { links.append(link) }
+links = links.filter({ $0.hasPrefix("http") })
+guard !links.isEmpty else { print("ERROR: Bad invocation"); exit(1) }
+
+func column(_ thing: Any?) {
+    print(thing ?? " ", terminator: "\t")
 }
-
-let links = CommandLine.arguments.filter({ $0.hasPrefix("http") })
-guard !links.isEmpty else { log.error("Bad invocation") }
-
-var running = 0
 
 for link in links {
-    guard let url = URL(string: link) else {
-        print("bad url: \(link)")
-        continue
-    }
-    
-    running += 1
-    URLSession.shared.dataTask(with: url) { (data, response, error) in
-        if let error = error { log.error(error) }
-        guard let data = data else { log.error("No data received") }
-        guard let doc = HTML(html: data, encoding: .utf8) else { log.error("Bad data") }
-        
-        if let prop = Property(doc: doc) {
-            print(link, terminator: "\t")
-            print(prop.tabulated)
-        } else {
-            log.warning("Failed to initialize property")
-        }
-        
-        running -= 1
-    }.resume()
+    let (data, response, error) = URLSession.shared.syncDataTask(with: URL(string: link)!)
+
+    guard (response as! HTTPURLResponse).statusCode != 404 else { print("\(link)\tREMOVED"); continue }
+    if let error = error { print("\(link)\tERROR"); continue }
+    guard data != nil else { print("\(link)\tNODATA"); continue }
+    guard let doc = HTML(html: data!, encoding: .utf8) else { print("\(link)\tBADDATA"); continue }
+
+
+    let info = doc.at_xpath("//div[@id='baseInfo']")!
+
+    let street = info.at_xpath("//span[@itemprop='streetAddress']")?.text
+    let suburb = info.at_xpath("//span[@itemprop='addressLocality']")?.text
+    let postCode = info.at_xpath("//span[@itemprop='postalCode']")?.text
+    let price = Regex("(\\$\\d+)").match(info.at_xpath("//p[@class='priceText']")?.text ?? "")?.captures[0]
+    let stats = info.at_xpath("//li[@class='property_info']")!
+    let available = info.at_xpath("//div[@class='available_date']/span")?.text
+    let nBeds = stats.at_xpath("//dd[1]")?.text
+    let nBaths = stats.at_xpath("//dd[2]")?.text
+
+    column(link)
+    column(" ")
+    column(street)
+    column(suburb)
+    column(postCode)
+    column(available)
+    column(price)
+    column(nBeds)
+    column(nBaths)
+    print()
 }
-
-while running > 0 {}
-
